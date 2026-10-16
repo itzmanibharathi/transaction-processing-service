@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Transaction Processing Service",
     description="Durable transaction intake, processing, and audit reporting",
-    version="1.4.0",
+    version="1.4.1",
     lifespan=lifespan,
 )
 
@@ -114,6 +114,18 @@ def payload_matches(existing, transaction):
         and existing["description"] == transaction.description
         and existing["timestamp"] == transaction.timestamp
         and old_metadata == transaction.metadata
+    )
+
+
+def transactions_match(left, right):
+    """Compare two validated transaction payloads, excluding database status/times."""
+    return (
+        left.id == right.id
+        and float(left.amount) == float(right.amount)
+        and left.currency.upper() == right.currency.upper()
+        and left.description == right.description
+        and left.timestamp == right.timestamp
+        and left.metadata == right.metadata
     )
 
 
@@ -196,7 +208,6 @@ def parse_report_date(value, field_name):
 
 
 def get_report_rows(conn, status, start_date, end_date, date_field, transaction_id):
-    """Build a parameterized report query."""
     conditions = []
     params = []
 
@@ -244,7 +255,6 @@ def get_report_rows(conn, status, start_date, end_date, date_field, transaction_
 
 
 def csv_safe(value):
-    """Reduce spreadsheet formula injection risk in exported CSV text."""
     if value is None:
         return ""
 
@@ -307,7 +317,8 @@ def create_transaction(transaction: Transaction):
                 "submittedAt": existing["created_at"],
                 "completedAt": existing["completed_at"],
                 "error": existing["error_message"],
-                "message": "Transaction already exists",
+                "isDuplicate": True,
+                "message": "Transaction already exists (Duplicate)",
             }
             conn.commit()
             return result
@@ -328,6 +339,7 @@ def create_transaction(transaction: Transaction):
             "submittedAt": submitted_at,
             "completedAt": None,
             "error": None,
+            "isDuplicate": False,
             "message": "Transaction durably accepted",
         }
 
@@ -343,76 +355,215 @@ def create_transaction(transaction: Transaction):
 
 @app.post("/api/transactions/import")
 async def import_transactions(file: UploadFile = File(...)):
-    """Import CSV transactions. Valid rows are committed as pending."""
     if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Upload a .csv file")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "file_error",
+                "message": "Upload a .csv file",
+            },
+        )
 
     raw = await file.read(MAX_CSV_BYTES + 1)
     await file.close()
 
     if len(raw) > MAX_CSV_BYTES:
-        raise HTTPException(status_code=413, detail="CSV exceeds the 5 MB limit")
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "type": "file_error",
+                "message": "CSV exceeds the 5 MB limit",
+            },
+        )
 
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise HTTPException(
             status_code=400,
-            detail="CSV must use UTF-8 encoding",
+            detail={
+                "type": "file_error",
+                "message": "CSV must use UTF-8 encoding",
+            },
         ) from exc
 
     reader = csv.DictReader(io.StringIO(text))
 
-    required = {"id", "amount", "currency", "description", "timestamp"}
-    headers = set(reader.fieldnames or [])
+    required = {
+        "id",
+        "amount",
+        "currency",
+        "description",
+        "timestamp",
+    }
+
+    headers = {
+        header.strip()
+        for header in (reader.fieldnames or [])
+        if header
+    }
 
     if not required.issubset(headers):
         missing = sorted(required - headers)
         raise HTTPException(
             status_code=400,
-            detail={"message": "CSV is missing required columns", "missing": missing},
+            detail={
+                "type": "file_error",
+                "message": "CSV is missing required columns",
+                "missing": missing,
+            },
         )
 
     conn = get_connection()
+
     result = {
+        "success": True,
         "filename": file.filename,
+        "total_rows": 0,
         "rows_read": 0,
+        "processed_rows": 0,
         "accepted": 0,
         "duplicates": 0,
         "conflicts": 0,
         "rejected": 0,
+        "summary": {
+            "accepted": 0,
+            "duplicates": 0,
+            "conflicts": 0,
+            "rejected": 0,
+        },
+        "accepted_transactions": [],
+        "duplicate_transactions": [],
+        "conflict_transactions": [],
+        "rejected_transactions": [],
         "errors": [],
+        "row_results": [],
     }
 
+    # Keep the first valid transaction for each ID in this CSV.
+    seen_in_file = {}
+
+    def add_row_result(row_result, category):
+        result["row_results"].append(row_result)
+
+        if category == "accepted":
+            result["accepted"] += 1
+            result["accepted_transactions"].append(row_result)
+
+        elif category == "duplicate":
+            result["duplicates"] += 1
+            result["duplicate_transactions"].append(row_result)
+            result["errors"].append(row_result)
+
+        elif category == "conflict":
+            result["conflicts"] += 1
+            result["conflict_transactions"].append(row_result)
+            result["errors"].append(row_result)
+
+        elif category == "rejected":
+            result["rejected"] += 1
+            result["rejected_transactions"].append(row_result)
+            result["errors"].append(row_result)
+
     try:
-        for row_number, row in enumerate(reader, start=2):
+        for row_number, raw_row in enumerate(reader, start=2):
             result["rows_read"] += 1
 
             if result["rows_read"] > MAX_CSV_ROWS:
                 raise HTTPException(
                     status_code=413,
-                    detail=f"CSV exceeds the {MAX_CSV_ROWS}-row limit",
+                    detail={
+                        "type": "file_error",
+                        "message": (
+                            f"CSV exceeds the {MAX_CSV_ROWS}-row limit"
+                        ),
+                    },
                 )
 
+            row = {
+                key.strip() if isinstance(key, str) else key: value
+                for key, value in raw_row.items()
+            }
+
+            transaction_id = (row.get("id") or "").strip()
+
             try:
+                # Reject malformed rows with extra or missing CSV cells.
+                if None in row:
+                    raise ValueError(
+                        "Row contains more values than the CSV header"
+                    )
+
+                if any(value is None for value in row.values()):
+                    raise ValueError(
+                        "Row contains missing CSV values"
+                    )
+
                 metadata_value = row.get("metadata")
                 metadata = None
 
                 if metadata_value and metadata_value.strip():
                     metadata = json.loads(metadata_value)
+
                     if not isinstance(metadata, dict):
-                        raise ValueError("metadata must contain a JSON object")
+                        raise ValueError(
+                            "metadata must contain a JSON object"
+                        )
 
                 transaction = Transaction(
-                    id=row.get("id", ""),
-                    amount=float(row.get("amount", "")),
-                    currency=row.get("currency", ""),
-                    description=row.get("description", ""),
-                    timestamp=row.get("timestamp", ""),
+                    id=transaction_id,
+                    amount=float(row.get("amount") or ""),
+                    currency=row.get("currency") or "",
+                    description=row.get("description") or "",
+                    timestamp=row.get("timestamp") or "",
                     metadata=metadata,
                 )
 
+                base = {
+                    "row": row_number,
+                    "id": transaction.id,
+                }
+
+                # 1. Duplicate ID within this CSV.
+                if transaction.id in seen_in_file:
+                    previous = seen_in_file[transaction.id]
+
+                    if transactions_match(previous, transaction):
+                        add_row_result(
+                            {
+                                **base,
+                                "type": "duplicate",
+                                "message": (
+                                    "Identical transaction ID and data "
+                                    "already appeared in this CSV"
+                                ),
+                                "details": (
+                                    "No new transaction was inserted"
+                                ),
+                            },
+                            "duplicate",
+                        )
+                    else:
+                        add_row_result(
+                            {
+                                **base,
+                                "type": "conflict",
+                                "message": (
+                                    "Transaction ID is repeated in this "
+                                    "CSV with different data"
+                                ),
+                                "details": (
+                                    "No new transaction was inserted"
+                                ),
+                            },
+                            "conflict",
+                        )
+
+                    continue
+
+                # 2. Check the database using a write lock.
                 conn.execute("BEGIN IMMEDIATE")
+
                 existing = conn.execute(
                     "SELECT * FROM transactions WHERE id = ?",
                     (transaction.id,),
@@ -421,43 +572,167 @@ async def import_transactions(file: UploadFile = File(...)):
                 if existing:
                     conn.rollback()
 
+                    # Track this ID so later rows are compared against
+                    # the first valid occurrence in the uploaded CSV.
+                    seen_in_file[transaction.id] = transaction
+
                     if payload_matches(existing, transaction):
-                        result["duplicates"] += 1
+                        add_row_result(
+                            {
+                                **base,
+                                "type": "duplicate",
+                                "status": existing["status"],
+                                "message": (
+                                    "Transaction already exists with "
+                                    "identical data"
+                                ),
+                                "details": (
+                                    "Existing transaction was preserved"
+                                ),
+                            },
+                            "duplicate",
+                        )
                     else:
-                        result["conflicts"] += 1
-                        result["errors"].append({
-                            "row": row_number,
-                            "id": transaction.id,
-                            "error": "Transaction ID already exists with different data",
-                        })
+                        add_row_result(
+                            {
+                                **base,
+                                "type": "conflict",
+                                "status": existing["status"],
+                                "message": (
+                                    "Transaction ID already exists with "
+                                    "different data"
+                                ),
+                                "details": (
+                                    "Existing transaction was preserved"
+                                ),
+                            },
+                            "conflict",
+                        )
+
                     continue
 
-                insert_transaction(conn, transaction)
+                # 3. Insert a new transaction.
+                submitted_at = insert_transaction(conn, transaction)
                 conn.commit()
-                result["accepted"] += 1
+
+                seen_in_file[transaction.id] = transaction
+
+                add_row_result(
+                    {
+                        **base,
+                        "type": "accepted",
+                        "transactionId": transaction.id,
+                        "status": "pending",
+                        "submittedAt": submitted_at,
+                        "completedAt": None,
+                        "error": None,
+                        "message": "Transaction durably accepted",
+                    },
+                    "accepted",
+                )
 
             except HTTPException:
                 conn.rollback()
                 raise
+
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 conn.rollback()
-                result["rejected"] += 1
-                result["errors"].append({
-                    "row": row_number,
-                    "id": row.get("id", ""),
-                    "error": str(exc),
-                })
+
+                add_row_result(
+                    {
+                        "row": row_number,
+                        "id": transaction_id or None,
+                        "type": "validation_error",
+                        "message": "Invalid transaction data",
+                        "details": str(exc),
+                    },
+                    "rejected",
+                )
+
+            except sqlite3.IntegrityError as exc:
+                conn.rollback()
+
+                # A concurrent request might have inserted the ID.
+                existing = conn.execute(
+                    "SELECT * FROM transactions WHERE id = ?",
+                    (transaction_id,),
+                ).fetchone()
+
+                if existing:
+                    if (
+                        "transaction" in locals()
+                        and payload_matches(existing, transaction)
+                    ):
+                        add_row_result(
+                            {
+                                "row": row_number,
+                                "id": transaction_id,
+                                "type": "duplicate",
+                                "status": existing["status"],
+                                "message": (
+                                    "Transaction already exists "
+                                    "with identical data"
+                                ),
+                                "details": (
+                                    "Existing transaction was preserved"
+                                ),
+                            },
+                            "duplicate",
+                        )
+                    else:
+                        add_row_result(
+                            {
+                                "row": row_number,
+                                "id": transaction_id or None,
+                                "type": "conflict",
+                                "message": (
+                                    "Transaction ID already exists "
+                                    "with different data"
+                                ),
+                                "details": (
+                                    "Existing transaction was preserved"
+                                ),
+                            },
+                            "conflict",
+                        )
+                else:
+                    add_row_result(
+                        {
+                            "row": row_number,
+                            "id": transaction_id or None,
+                            "type": "database_error",
+                            "message": "Database rejected the row",
+                            "details": str(exc),
+                        },
+                        "rejected",
+                    )
+
             except sqlite3.Error as exc:
                 conn.rollback()
                 raise db_unavailable(exc) from exc
+
+        result["total_rows"] = result["rows_read"]
+        result["processed_rows"] = (
+            result["accepted"]
+            + result["duplicates"]
+            + result["conflicts"]
+            + result["rejected"]
+        )
+
+        result["summary"] = {
+            "accepted": result["accepted"],
+            "duplicates": result["duplicates"],
+            "conflicts": result["conflicts"],
+            "rejected": result["rejected"],
+        }
 
         return result
 
     except HTTPException:
         raise
+
     finally:
         conn.close()
-
 
 @app.get("/api/transactions")
 def list_transactions(
@@ -497,7 +772,7 @@ def list_transactions(
             "limit": limit,
             "offset": offset,
             "status_filter": status,
-            "transactions": [serialize_transaction(row) for row in rows],
+            "transactions": [serialize_transactions(row) if 'serialize_transactions' in globals() else serialize_transaction(row) for row in rows],
         }
     except (sqlite3.Error, json.JSONDecodeError) as exc:
         raise db_unavailable(exc) from exc
@@ -772,7 +1047,7 @@ def health_check():
         if integrity != "ok":
             raise HTTPException(
                 status_code=503,
-                detail="Database integrity check failed",
+                detail="Database integrity check field",
             )
 
         attempt_total = attempts["total"] or 0

@@ -21,11 +21,22 @@ export function setApiBaseUrl(url) {
  * Core fetch wrapper with JSON parsing, error normalization, and proxy fallback.
  */
 async function request(endpoint, options = {}) {
-  const baseUrl = getApiBaseUrl();
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   
-  // Try configured base URL first
-  const primaryUrl = `${baseUrl}${cleanEndpoint}`;
+  // In the browser, always route through the relative path (/api/...) which Vite
+  // proxies to the FastAPI backend (http://127.0.0.1:8000) with changeOrigin: true.
+  // This completely eliminates cross-origin CORS errors ("Disallowed CORS origin" / "Failed to fetch")
+  // and prevents duplicate request submissions.
+  let targetUrl = cleanEndpoint;
+  if (typeof window !== 'undefined') {
+    const customUrl = localStorage.getItem('openfabric_api_url');
+    // Only use an absolute URL if user explicitly specified an external non-local server
+    if (customUrl && !customUrl.includes(':8000') && !customUrl.includes('localhost') && !customUrl.includes('127.0.0.1')) {
+      targetUrl = `${customUrl.replace(/\/+$/, '')}${cleanEndpoint}`;
+    }
+  } else {
+    targetUrl = `${DEFAULT_API_BASE_URL}${cleanEndpoint}`;
+  }
   
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers = {
@@ -37,7 +48,7 @@ async function request(endpoint, options = {}) {
   }
 
   try {
-    const res = await fetch(primaryUrl, {
+    const res = await fetch(targetUrl, {
       ...options,
       headers,
     });
@@ -48,8 +59,19 @@ async function request(endpoint, options = {}) {
     if (!res.ok) {
       let errorMsg = `HTTP ${res.status}`;
       if (typeof data === 'object' && data !== null) {
-        if (data.detail) {
-          errorMsg = typeof data.detail === 'object' ? JSON.stringify(data.detail) : data.detail;
+        if (data.detail !== undefined && data.detail !== null) {
+          if (typeof data.detail === 'string') {
+            errorMsg = data.detail;
+          } else if (typeof data.detail === 'object') {
+            if (data.detail.message) {
+              const missingPart = Array.isArray(data.detail.missing) ? ` (${data.detail.missing.join(', ')})` : '';
+              errorMsg = `${data.detail.message}${missingPart}`;
+            } else if (Array.isArray(data.detail)) {
+              errorMsg = data.detail.map((d) => (d.msg ? `${d.loc ? d.loc.join('.') + ': ' : ''}${d.msg}` : JSON.stringify(d))).join('; ');
+            } else {
+              errorMsg = JSON.stringify(data.detail);
+            }
+          }
         } else if (data.message) {
           errorMsg = data.message;
         } else {
@@ -66,17 +88,38 @@ async function request(endpoint, options = {}) {
 
     return data;
   } catch (err) {
-    // If it's a TypeError (NetworkError / CORS), try relative path via Vite proxy as fallback
-    if (err instanceof TypeError && !baseUrl.startsWith(window.location.origin)) {
+    // If relative proxy path failed (e.g. running without Vite proxy), attempt direct URL as fallback for GET requests only
+    const isGet = !options.method || options.method.toUpperCase() === 'GET';
+    const fallbackUrl = `${DEFAULT_API_BASE_URL}${cleanEndpoint}`;
+    if (isGet && err instanceof TypeError && targetUrl !== fallbackUrl) {
       try {
-        const fallbackUrl = cleanEndpoint;
         const res = await fetch(fallbackUrl, { ...options, headers });
         const isJson = (res.headers.get('content-type') || '').includes('application/json');
         const data = isJson ? await res.json() : await res.text();
         if (!res.ok) {
-          const errorMsg = typeof data === 'object' && data !== null
-            ? (data.detail || data.message || JSON.stringify(data))
-            : String(data || `HTTP ${res.status}`);
+          let errorMsg = `HTTP ${res.status}`;
+          if (typeof data === 'object' && data !== null) {
+            if (data.detail !== undefined && data.detail !== null) {
+              if (typeof data.detail === 'string') {
+                errorMsg = data.detail;
+              } else if (typeof data.detail === 'object') {
+                if (data.detail.message) {
+                  const missingPart = Array.isArray(data.detail.missing) ? ` (${data.detail.missing.join(', ')})` : '';
+                  errorMsg = `${data.detail.message}${missingPart}`;
+                } else if (Array.isArray(data.detail)) {
+                  errorMsg = data.detail.map((d) => (d.msg ? `${d.loc ? d.loc.join('.') + ': ' : ''}${d.msg}` : JSON.stringify(d))).join('; ');
+                } else {
+                  errorMsg = JSON.stringify(data.detail);
+                }
+              }
+            } else if (data.message) {
+              errorMsg = data.message;
+            } else {
+              errorMsg = JSON.stringify(data);
+            }
+          } else if (data) {
+            errorMsg = String(data);
+          }
           const fallbackErr = new Error(errorMsg);
           fallbackErr.status = res.status;
           fallbackErr.data = data;
@@ -194,16 +237,22 @@ export const api = {
    * Direct file download trigger for CSV / JSON reports
    */
   async downloadReportFile(endpoint, defaultFilename = 'download.csv') {
-    const baseUrl = getApiBaseUrl();
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-    let primaryUrl = `${baseUrl}${cleanEndpoint}`;
+    let targetUrl = cleanEndpoint;
+    if (typeof window !== 'undefined') {
+      const customUrl = localStorage.getItem('openfabric_api_url');
+      if (customUrl && !customUrl.includes(':8000') && !customUrl.includes('localhost') && !customUrl.includes('127.0.0.1')) {
+        targetUrl = `${customUrl.replace(/\/+$/, '')}${cleanEndpoint}`;
+      }
+    } else {
+      targetUrl = `${DEFAULT_API_BASE_URL}${cleanEndpoint}`;
+    }
 
     let res;
     try {
-      res = await fetch(primaryUrl);
+      res = await fetch(targetUrl);
     } catch {
-      // Proxy fallback
-      res = await fetch(cleanEndpoint);
+      res = await fetch(`${DEFAULT_API_BASE_URL}${cleanEndpoint}`);
     }
 
     if (!res.ok) {

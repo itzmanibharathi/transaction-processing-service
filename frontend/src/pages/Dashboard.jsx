@@ -83,15 +83,16 @@ export default function Dashboard() {
 
   const totalTx = summaryData?.total_transactions ?? txStats.total ?? recentTransactions.length;
   const pendingTx = statusCounts.pending ?? 0;
-  const processingTx = txStats.processing ?? statusCounts.processing ?? 0;
+  const processingTx = statusCounts.processing ?? 0;
   const completedTx = statusCounts.completed ?? 0;
   const failedTx = statusCounts.failed ?? 0;
   const queueDepth = txStats.queue_depth ?? pendingTx;
 
-  // Calculate success rate strictly if total > 0
-  const successRate = totalTx > 0
-    ? `${((completedTx / totalTx) * 100).toFixed(1)}%`
-    : '0.0%';
+  // Success rate: completed / (completed + failed) — excludes pending/processing in progress
+  const finalized = completedTx + failedTx;
+  const successRate = finalized > 0
+    ? `${((completedTx / finalized) * 100).toFixed(1)}%`
+    : 'N/A';
 
   const errorRatePercent = attemptStats.error_rate !== undefined
     ? `${(attemptStats.error_rate * 100).toFixed(1)}%`
@@ -341,7 +342,7 @@ export default function Dashboard() {
         <MetricCard
           title="Overall Success Rate"
           value={successRate}
-          subtext={`${completedTx} of ${totalTx} finalized`}
+          subtext={`${completedTx} completed of ${finalized} finalized`}
           icon={Percent}
           color="teal"
         />

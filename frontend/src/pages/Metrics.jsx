@@ -70,7 +70,7 @@ export default function Metrics() {
 
   const totalTx = txData.total ?? 0;
   const pendingTx = byStatus.pending ?? 0;
-  const processingTx = txData.processing ?? byStatus.processing ?? 0;
+  const processingTx = byStatus.processing ?? 0;
   const completedTx = byStatus.completed ?? 0;
   const failedTx = byStatus.failed ?? 0;
   const queueDepth = txData.queue_depth ?? 0;
@@ -82,9 +82,10 @@ export default function Metrics() {
     ? `${(attemptData.error_rate * 100).toFixed(2)}%`
     : '0.00%';
 
-  const completionRate = totalTx > 0
-    ? `${((completedTx / totalTx) * 100).toFixed(1)}%`
-    : '0.0%';
+  const finalized = completedTx + failedTx;
+  const completionRate = finalized > 0
+    ? `${((completedTx / finalized) * 100).toFixed(1)}%`
+    : 'N/A';
 
   return (
     <div className="page-content">
@@ -142,7 +143,7 @@ export default function Metrics() {
         <MetricCard
           title="Completion Rate"
           value={completionRate}
-          subtext={`${completedTx} of ${totalTx} finalized`}
+          subtext={`${completedTx} of ${finalized} finalized`}
           icon={CheckCircle2}
           color="green"
         />
