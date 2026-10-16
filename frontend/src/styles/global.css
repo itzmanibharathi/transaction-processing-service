@@ -1,0 +1,124 @@
+:root {
+  /* Navbar & Sidebar Pure White & Emerald/Teal Theme */
+  --color-sidebar-bg: #FFFFFF;              /* Pure white sidebar */
+  --color-sidebar-border: #E5E7EB;          /* Subtle light-gray border */
+  --color-sidebar-text: #263238;            /* Dark charcoal text for readable labels */
+  --color-sidebar-text-muted: #546E7A;      /* Medium charcoal for subtitles & section headings */
+  --color-sidebar-hover-bg: #F0FDFA;        /* Light teal background on hover */
+  --color-sidebar-hover-text: #0F766E;      /* Teal text on hover */
+  --color-sidebar-active-bg: #F0FDFA;       /* Pale teal background for active page */
+  --color-sidebar-active-text: #0F766E;     /* Muted emerald/teal for active item */
+  --color-sidebar-active-border: #0F766E;   /* Teal accent indicator */
+
+  /* Brand Accents (Open Fabric muted emerald/teal) */
+  --color-brand-teal: #0F766E;              /* Muted emerald / teal */
+  --color-brand-teal-hover: #0D655E;
+  --color-brand-teal-light: #F0FDFA;
+  --color-brand-mint: #1EC8A5;
+  --color-brand-deep: #263238;              /* Dark charcoal */
+  
+  /* Page & Surfaces */
+  --color-page-bg: #F8F9FA;                 /* Light grey / warm off-white */
+  --color-card-bg: #FFFFFF;                 /* Pure white card */
+  --color-border: #E5E7EB;                  /* Subtle crisp light-gray border */
+  --color-border-subtle: #F1F3F5;
+  --color-border-hover: #D1D5DB;
+
+  /* Typography Colors */
+  --color-text-primary: #263238;            /* Dark charcoal */
+  --color-text-secondary: #546E7A;          /* Charcoal secondary */
+  --color-text-tertiary: #90A4AE;
+
+  /* Primary Action Buttons */
+  --color-btn-primary-bg: #0F766E;          /* Muted emerald/teal primary button */
+  --color-btn-primary-text: #FFFFFF;
+  --color-btn-primary-hover: #0D655E;
+  --color-btn-primary-active: #0B534E;
+
+  /* Status Colors */
+  --color-success: #047857;          /* Muted emerald */
+  --color-success-bg: #ECFDF5;
+  --color-success-border: #A7F3D0;
+
+  --color-warning: #B45309;          /* Amber */
+  --color-warning-bg: #FFFBEB;
+  --color-warning-border: #FDE68A;
+
+  --color-error: #BE123C;            /* Rose / coral */
+  --color-error-bg: #FFF1F2;
+  --color-error-border: #FECDD3;
+
+  --color-info: #0369A1;             /* Sky / azure */
+  --color-info-bg: #F0F9FF;
+  --color-info-border: #BAE6FD;
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Dimensions */
+  --sidebar-width: 240px;
+  --topbar-height: 60px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* Restrained Shadows */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.03);
+  --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, 0.06), 0 2px 4px -2px rgba(15, 23, 42, 0.03);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-page-bg);
+  color: var(--color-text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: 0.875rem;
+}
+
+code, pre {
+  font-family: var(--font-mono);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
